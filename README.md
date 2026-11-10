@@ -17,9 +17,11 @@ Then start `pi` inside Herdr and run `/login` for the providers you use.
 - `--skip-external` writes configuration only: no npm, pi package, Herdr, or network installs.
 - `--home PATH` installs into another home directory, for a throwaway smoke test.
 - `--force` backs up conflicting targets to `~/.local/state/weihung-agent-root/backups/<timestamp>/` before replacing them; without it a conflict stops the install.
+- `--computer-use disabled` excludes desktop control, removes an existing package declaration, and keeps that choice on later installs and uninstall. Re-enable explicitly with `--computer-use enabled`.
+- `--pi-code-hooks enabled` loads native Claude hooks alongside rules, retaining pi-code's trust and confirmation gates. Hooks stay rules-only by default; `--pi-code-hooks disabled` restores that default. The choice survives later installs.
 - `bash scripts/uninstall.sh` removes what the install added and restores what it backed up.
 
-The installer never overwrites a file you own silently, and it is idempotent: re-run it after pulling changes.
+The installer never overwrites a file you own silently, and it is idempotent: re-run it after pulling changes. It also enables the Straw Boss sidebar and worktree reaper; pin workspaces you want to keep before installation. See [Herdr plugins](docs/reference.md#herdr-plugins) for cleanup behavior and controls.
 
 ## What you get
 

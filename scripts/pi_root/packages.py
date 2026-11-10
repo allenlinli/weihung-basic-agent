@@ -1,9 +1,11 @@
 """Pi packages: identity, the packages this repository owns, and the install step that also brings the tools they need."""
 
+import json
 import os
 import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 from . import external, resources, unattended
@@ -18,6 +20,9 @@ from .paths import (
 )
 from .pins import (
     ANCHORLOOP_PACKAGE,
+    CLAUDE_HOOKS_EXTENSION,
+    CLAUDE_RULES_SOURCE,
+    COMPUTER_USE_ID,
     HERDR_AGENTS_SOURCE,
     HERDR_PLUGINS,
     PACKAGES,
@@ -114,14 +119,25 @@ def herdr_agents_root() -> str | None:
 
 def owned_packages(state: State) -> list[Package]:
     """PACKAGES minus the recorded profile's drops, with the pinned pi-herdr-agents release swapped for the override checkout the install recorded."""
-    dropped = unattended.dropped_ids(state.get("profile"))
-    return [state["herdr_agents"] if package == HERDR_AGENTS_SOURCE and state.get("herdr_agents") else package
-            for package in PACKAGES if package_id(package, Path()) not in dropped]
+    dropped = {package_id(package, Path()) for package in profile_dropped(state)}
+    result = []
+    for package in PACKAGES:
+        if package_id(package, Path()) in dropped:
+            continue
+        if package == HERDR_AGENTS_SOURCE and state.get("herdr_agents"):
+            package = state["herdr_agents"]
+        elif package_source(package) == CLAUDE_RULES_SOURCE and state.get("pi_code_hooks") == "enabled":
+            package = {**package, "extensions": [*package["extensions"], CLAUDE_HOOKS_EXTENSION]}
+        result.append(package)
+    return result
 
 
 def profile_dropped(state: State) -> list[Package]:
     """The PACKAGES entries the recorded profile leaves out."""
-    return [package for package in PACKAGES if package_id(package, Path()) in unattended.dropped_ids(state.get("profile"))]
+    dropped = unattended.dropped_ids(state.get("profile"))
+    if state.get("computer_use") == "disabled":
+        dropped = dropped | {COMPUTER_USE_ID}
+    return [package for package in PACKAGES if package_id(package, Path()) in dropped]
 
 
 def plugin_keys(state: State) -> list[str]:
@@ -187,18 +203,57 @@ def plugin_line(home: Path, plugin_id: str) -> str | None:
     return next((line for line in listed.splitlines() if f"{plugin_id} (" in line), None)
 
 
+def needs_portable_plugins() -> bool:
+    """NixOS supplies bash on PATH, not at the upstream manifests' /bin/bash."""
+    return not Path("/bin/bash").is_file()
+
+
+def portable_plugin_root(home: Path, plugin_id: str, repo: str, ref: str) -> Path:
+    """Prepare a pinned local plugin before linking it; never edit Herdr's internal store."""
+    bash = shutil.which("bash")
+    if not bash:
+        raise ValueError("bash is not on PATH; the Herdr plugins require bash")
+    root = home / ".local/share/weihung-agent-root/herdr-plugins" / plugin_id / ref
+    if not root.exists():
+        root.parent.mkdir(parents=True, exist_ok=True)
+        # A failed clone or patch leaves no final directory, so the next run retries.
+        with tempfile.TemporaryDirectory(dir=root.parent) as directory:
+            staging = Path(directory)
+            checkout = staging / "checkout"
+            owner, repository, subdir = repo.split("/", 2)
+            external.run(["git", "clone", "--depth", "1", "--branch", ref,
+                          f"https://github.com/{owner}/{repository}.git", str(checkout)], home)
+            prepared = staging / "plugin"
+            shutil.copytree(checkout / subdir, prepared)
+            manifest = prepared / "herdr-plugin.toml"
+            text = manifest.read_text()
+            if '["/bin/bash",' not in text:
+                raise ValueError(f"{repo}@{ref}: expected /bin/bash manifest commands; inspect the new pin")
+            manifest.write_text(text.replace('["/bin/bash",', f'[{json.dumps(bash)},'))
+            prepared.rename(root)
+    return root
+
+
 def install_herdr_plugins(ctx: Context) -> None:
-    """Install each Herdr plugin at its pinned tag; a plugin at another source or tag is replaced."""
+    """Install pinned plugins, using portable local manifests only where /bin/bash is absent."""
     for plugin_id, repo, ref, preinstalled in HERDR_PLUGINS:
         line = plugin_line(ctx.home, plugin_id)
         if preinstalled not in ctx.state:
             ctx.state[preinstalled] = line is not None
             ctx.save()
-        if line and f"github:{repo}@{ref}" in line:
+        root = portable_plugin_root(ctx.home, plugin_id, repo, ref) if needs_portable_plugins() else None
+        expected = str(root) if root else f"github:{repo}@{ref}"
+        if line and expected in line:
             continue
         if line:
             external.run(["herdr", "plugin", "uninstall", plugin_id], ctx.home)
-        external.run(["herdr", "plugin", "install", repo, "--ref", ref, "--yes"], ctx.home)
+        if root:
+            external.run(["herdr", "plugin", "link", str(root)], ctx.home)
+        else:
+            external.run(["herdr", "plugin", "install", repo, "--ref", ref, "--yes"], ctx.home)
+    print("Herdr keys unchanged. Sidebar action: wayne930242.straw-boss.net; "
+          "workspace pin action: wayne930242.straw-boss-reaper.pin. "
+          "Pinned workspaces are kept by the reaper; see docs/reference.md.")
 
 
 def apply(ctx: Context) -> None:
@@ -234,11 +289,11 @@ def apply(ctx: Context) -> None:
             settings = read_json(settings_path)
             if package not in settings.get("packages", []):
                 continue
-            if package.startswith("git:"):
+            if package_source(package).startswith("git:"):
                 settings["packages"] = [value for value in settings["packages"] if value != package]
                 write_json(settings_path, settings)
             else:
-                external.run(["pi", "remove", package], home)
+                external.run(["pi", "remove", package_source(package)], home)
         for package in read_json(settings_path).get("packages", []):
             if package_id(package, agent_dir) in retired_ids:
                 external.run(["pi", "remove", package_source(package)], home)
@@ -285,7 +340,9 @@ def restore(ctx: Context) -> None:
     """Remove what install added and put back the packages and tools the user had before it."""
     home, state, agent_dir, settings_path = ctx.home, ctx.state, ctx.agent_dir, ctx.settings_path
     resources.uninstall_ported_resources(home, state)
-    previous_packages = state.get("previous_packages", [])
+    # An explicit safety opt-out also applies to uninstall: never resurrect a disabled package.
+    previous_packages = [package for package in state.get("previous_packages", [])
+                         if not (state.get("computer_use") == "disabled" and package_id(package, agent_dir) == COMPUTER_USE_ID)]
     previous_ids = {package_id(value, agent_dir) for value in previous_packages}
     managed_packages = owned_packages(state) + local_packages(state)
     optional = [state[key] for key in plugin_keys(state) if state.get(key)]

@@ -15,6 +15,8 @@ OVERLAY_ROOT=""
 SAVED_OVERLAY=""
 NO_OVERLAY=0
 PROFILE=""
+COMPUTER_USE=""
+PI_CODE_HOOKS=""
 TARGET_HOME="${HOME}"
 FORCE=0
 SKIP_EXTERNAL=0
@@ -22,7 +24,7 @@ BACKUP_ROOT=""
 
 usage() {
   cat <<'EOF'
-Usage: bash scripts/install.sh [--home PATH] [--force] [--skip-external] [--overlay PATH | --no-overlay] [--profile default|unattended]
+Usage: bash scripts/install.sh [--home PATH] [--force] [--skip-external] [--overlay PATH | --no-overlay] [--profile default|unattended] [--computer-use enabled|disabled] [--pi-code-hooks enabled|disabled]
 
 Installs this repository's pi setup:
   - ~/.agents/skills/*/        links to skills/ (and the overlay's skills/)
@@ -35,6 +37,11 @@ Installs this repository's pi setup:
     integration, pi packages, anchorloop, this repository's pi package, the
     generated ~/.pi/agent/AGENTS.md, model routing, UI settings,
     the overlay's optional plugins (when their checkouts exist), and team-toon-tack
+
+--computer-use disabled removes the computer-use package, including an existing
+entry. --pi-code-hooks enabled loads native Claude hooks alongside rules only.
+Both choices are saved; bare/auto installs keep them, independently of --profile.
+Hooks keep pi-code's trust and confirmation gates. No trust or hook commands are added.
 
 Pass --skip-external to install configuration only, without npm, pi, Herdr,
 or network installers.
@@ -217,6 +224,12 @@ while [[ $# -gt 0 ]]; do
       PROFILE="$2"
       shift 2
       ;;
+    --computer-use|--pi-code-hooks)
+      [[ $# -ge 2 ]] || fail "$1 requires enabled or disabled"
+      case "$2" in enabled|disabled) ;; *) fail "$1 requires enabled or disabled" ;; esac
+      if [[ "$1" == --computer-use ]]; then COMPUTER_USE="$2"; else PI_CODE_HOOKS="$2"; fi
+      shift 2
+      ;;
     -h|--help)
       usage
       exit 0
@@ -287,6 +300,8 @@ if [[ "$NO_OVERLAY" -eq 1 ]]; then pi_args+=(--no-overlay); fi
 if [[ "$SKIP_EXTERNAL" -eq 1 ]]; then pi_args+=(--skip-external); fi
 if [[ "$FORCE" -eq 1 ]]; then pi_args+=(--force); fi
 if [[ -n "$PROFILE" ]]; then pi_args+=(--profile "$PROFILE"); fi
+if [[ -n "$COMPUTER_USE" ]]; then pi_args+=(--computer-use "$COMPUTER_USE"); fi
+if [[ -n "$PI_CODE_HOOKS" ]]; then pi_args+=(--pi-code-hooks "$PI_CODE_HOOKS"); fi
 "$PYTHON" "$REPO_ROOT/scripts/pi-target.py" "${pi_args[@]}"
 
 log "Install complete."

@@ -42,9 +42,11 @@ RETIRED_SOURCES = ("npm:pi-herdr-doc-review", "npm:@victor-software-house/pi-cur
                    "git:github.com/wayne930242/pi-lens",
                    # pi-lens ran diagnostics and language servers after every edit and cost too much CPU and memory.
                    "npm:pi-lens")
-# pi-code loads only claude-rules.ts, which reads each project's .claude/rules as Claude Code does;
-# its other extensions duplicate the todo, MCP, subagent, and web packages below.
+# Rules load by default. --pi-code-hooks enabled adds only the native hooks entrypoint;
+# other extensions duplicate the todo, MCP, subagent, and web packages below.
 CLAUDE_RULES_PACKAGE = {"source": CLAUDE_RULES_SOURCE, "extensions": ["extensions/claude-rules.ts"]}
+CLAUDE_HOOKS_EXTENSION = "extensions/hooks/index.ts"
+COMPUTER_USE_ID = "npm:@injaneity/pi-computer-use"
 PACKAGES = [
     BRIDGE_SOURCE,
     HERDR_AGENTS_SOURCE,

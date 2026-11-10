@@ -345,6 +345,9 @@ def restore_open_tui(ctx: Context) -> None:
 
 
 def apply_computer_use(ctx: Context) -> None:
+    if ctx.state.get("computer_use") == "disabled":
+        restore_computer_use(ctx)
+        return
     if unattended.is_unattended(ctx.profile):
         return
     state = ctx.state
