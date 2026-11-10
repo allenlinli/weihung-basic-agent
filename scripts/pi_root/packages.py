@@ -244,14 +244,7 @@ def portable_plugin_root(home: Path, plugin_id: str, repo: str, ref: str) -> Pat
     bash = portable_bash()
     root = home / PORTABLE_PLUGINS_DIR / plugin_id / ref
     # An earlier run may have recorded a bash that is gone or differs now; prepare the pin again.
-    if root.exists() and manifest_interpreters(root) != {bash}:
-        shutil.rmtree(root)
-    if root.parent.exists():
-        # Older pins and the staging folders of an interrupted run.
-        for sibling in root.parent.iterdir():
-            if sibling.name != ref:
-                shutil.rmtree(sibling)
-    if not root.exists():
+    if not root.exists() or manifest_interpreters(root) != {bash}:
         root.parent.mkdir(parents=True, exist_ok=True)
         # A failed clone or patch leaves no final directory, so the next run retries.
         with tempfile.TemporaryDirectory(dir=root.parent) as directory:
@@ -267,7 +260,17 @@ def portable_plugin_root(home: Path, plugin_id: str, repo: str, ref: str) -> Pat
             if '["/bin/bash",' not in text:
                 raise ValueError(f"{repo}@{ref}: expected /bin/bash manifest commands; inspect the new pin")
             manifest.write_text(text.replace('["/bin/bash",', f'[{json.dumps(bash)},'))
+            if root.exists():
+                shutil.rmtree(root)
             prepared.rename(root)
+    # Only once the pin is in place: older pins, the staging folders of an interrupted run, and anything else left there.
+    for sibling in root.parent.iterdir():
+        if sibling.name == ref:
+            continue
+        if sibling.is_dir() and not sibling.is_symlink():
+            shutil.rmtree(sibling)
+        else:
+            sibling.unlink()
     return root
 
 

@@ -139,8 +139,12 @@ class FleetOptionsTests(unittest.TestCase):
                 (cache / name).write_text("")
             alive = {4242}
             commands = []
+            reset_saw_app = []
             def run(args, **_kwargs):
                 commands.append(args)
+                if args[0] == "tccutil":
+                    # tccutil resolves the bundle id to an app on disk, so the reset must come before deletion.
+                    reset_saw_app.append(app.exists() and not alive)
                 stdout = "".join(f"{pid}\n" for pid in alive) if args[0] == "pgrep" else ""
                 return subprocess.CompletedProcess(args, 0 if stdout or args[0] != "pgrep" else 1, stdout, "")
             def kill(pid, sig):
@@ -151,8 +155,9 @@ class FleetOptionsTests(unittest.TestCase):
             ctx = Context(home, {"computer_use": "disabled"})
             with mock.patch.object(configs.sys, "platform", "darwin"), \
                     mock.patch.object(configs.subprocess, "run", run), mock.patch.object(configs.os, "kill", kill):
-                configs.apply_computer_use(ctx)
-                configs.apply_computer_use(ctx)
+                configs.retire_computer_use(ctx)
+                configs.retire_computer_use(ctx)
+            self.assertEqual(reset_saw_app, [True])
             self.assertFalse(app.exists())
             self.assertEqual(list(cache.iterdir()), [])
             self.assertEqual(commands.count(["tccutil", "reset", "All", configs.COMPUTER_USE_BUNDLE]), 1)
@@ -169,11 +174,29 @@ class FleetOptionsTests(unittest.TestCase):
             app.mkdir(parents=True)
             with mock.patch.object(configs.subprocess, "run") as run:
                 with mock.patch.object(configs.sys, "platform", "linux"):
-                    configs.apply_computer_use(Context(home, {"computer_use": "disabled"}))
+                    configs.retire_computer_use(Context(home, {"computer_use": "disabled"}))
                 with mock.patch.object(configs.sys, "platform", "darwin"):
-                    configs.apply_computer_use(Context(home, {"computer_use": "enabled"}))
+                    configs.retire_computer_use(Context(home, {"computer_use": "enabled"}))
             run.assert_not_called()
             self.assertTrue(app.exists())
+
+    def test_a_failed_grant_reset_keeps_the_helper_for_the_next_run(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory)
+            app = home / configs.COMPUTER_USE_APP
+            app.mkdir(parents=True)
+            def run(args, **_kwargs):
+                failed = args[0] == "tccutil"
+                return subprocess.CompletedProcess(args, 1, "", "No such bundle identifier" if failed else "")
+            with mock.patch.object(configs.sys, "platform", "darwin"), mock.patch.object(configs.subprocess, "run", run):
+                with self.assertRaisesRegex(RuntimeError, "tccutil"):
+                    configs.retire_computer_use(Context(home, {"computer_use": "disabled"}))
+            self.assertTrue(app.exists())
+
+    def test_the_helper_is_retired_after_the_package_is_removed(self) -> None:
+        from pi_root import steps
+        names = [step.name for step in steps.STEPS]
+        self.assertGreater(names.index("computer-use-helper"), names.index("packages"))
 
     def test_portable_bash_prefers_the_system_profile_over_store_paths(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -210,6 +233,34 @@ class FleetOptionsTests(unittest.TestCase):
             self.assertEqual(sorted(path.name for path in parent.iterdir()), [ref])
             packages.remove_portable_plugin(home, plugin_id)
             self.assertFalse(parent.exists())
+
+    def test_a_failed_pin_bump_keeps_the_linked_plugin(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory)
+            plugin_id, repo, ref, _ = HERDR_PLUGINS[0]
+            parent = home / ".local/share/weihung-agent-root/herdr-plugins" / plugin_id
+            linked = parent / "v0.1.0"
+            linked.mkdir(parents=True)
+            (parent / "stray-file").write_text("")
+            outside = Path(directory) / "outside"
+            outside.mkdir()
+            (parent / "stray-link").symlink_to(outside)
+            def clone_fails(args: list[str], _home: Path) -> None:
+                raise RuntimeError("network down")
+            with mock.patch.object(external, "run", clone_fails), \
+                    mock.patch.object(packages, "portable_bash", return_value="/run/current-system/sw/bin/bash"):
+                with self.assertRaisesRegex(RuntimeError, "network"):
+                    packages.portable_plugin_root(home, plugin_id, repo, ref)
+            self.assertTrue(linked.exists())
+            def clone(args: list[str], _home: Path) -> None:
+                root = Path(args[-1]) / repo.split("/", 2)[2]
+                root.mkdir(parents=True)
+                (root / "herdr-plugin.toml").write_text('[[startup]]\ncommand = ["/bin/bash", "run.sh"]\n')
+            with mock.patch.object(external, "run", clone), \
+                    mock.patch.object(packages, "portable_bash", return_value="/run/current-system/sw/bin/bash"):
+                packages.portable_plugin_root(home, plugin_id, repo, ref)
+            self.assertEqual(sorted(path.name for path in parent.iterdir()), [ref])
+            self.assertTrue(outside.exists())
 
     def test_linked_plugin_match_uses_the_resolved_root(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

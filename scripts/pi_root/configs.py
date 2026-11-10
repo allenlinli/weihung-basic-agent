@@ -369,8 +369,18 @@ def running(pid: int) -> bool:
     return True
 
 
+def retire_computer_use(ctx: Context) -> None:
+    """After the packages step removed pi-computer-use, so no session can rebuild the helper, retire it on macOS."""
+    if ctx.state.get("computer_use") == "disabled" and sys.platform == "darwin":
+        retire_computer_use_helper(ctx.home)
+
+
+def keep_retired(_ctx: Context) -> None:
+    """Uninstall never brings back a retired helper; re-enabling reinstalls the package, which rebuilds it."""
+
+
 def retire_computer_use_helper(home: Path) -> None:
-    """Stop the macOS bridge, then remove its socket, the helper app, and the privacy grants made to it."""
+    """Stop the macOS bridge, reset the privacy grants made to the helper, then remove the app and its socket."""
     app = home / COMPUTER_USE_APP
     pids = helper_pids(app / "Contents/MacOS/bridge")
     for pid in pids:
@@ -385,18 +395,18 @@ def retire_computer_use_helper(home: Path) -> None:
     for name in ("bridge.sock", "bridge.sock.lock"):
         (cache / name).unlink(missing_ok=True)
     if app.exists():
-        shutil.rmtree(app)
+        # tccutil finds the bundle id through the app on disk, so the reset comes first; a failed reset keeps the app
+        # so the next run tries again.
         reset = subprocess.run(["tccutil", "reset", "All", COMPUTER_USE_BUNDLE], capture_output=True, text=True, check=False)
         if reset.returncode:
-            print(f"WARN: tccutil reset All {COMPUTER_USE_BUNDLE} failed ({reset.stderr.strip()}); "
-                  "remove pi-computer-use from Privacy & Security yourself", file=sys.stderr)
+            raise RuntimeError(f"tccutil reset All {COMPUTER_USE_BUNDLE} failed ({reset.stderr.strip()}); the helper app stays "
+                               "until a rerun resets its grants, or remove pi-computer-use from Privacy & Security yourself")
+        shutil.rmtree(app)
 
 
 def apply_computer_use(ctx: Context) -> None:
     if ctx.state.get("computer_use") == "disabled":
         restore_computer_use(ctx)
-        if sys.platform == "darwin":
-            retire_computer_use_helper(ctx.home)
         return
     if unattended.is_unattended(ctx.profile):
         return
