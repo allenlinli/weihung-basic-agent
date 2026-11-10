@@ -80,10 +80,11 @@ PACKAGES = [
     "npm:@injaneity/pi-computer-use@0.5.1",
     CLAUDE_RULES_PACKAGE,
 ]
-# The Herdr plugins in pi-straw-boss, each installed with `herdr plugin install` at its tag: plugin id, repository path, tag,
-# and the state key that records whether the user had it before install. They change less often than the pi package:
-# bump a tag when that folder changes. herdr-plugin is the sidebar's net view (prefix+alt+n); herdr-reaper closes the
-# panes agents leave in worktree workspaces, removes their clean checkouts, and keeps pinned workspaces (prefix+P).
+# The Herdr plugins in pi-straw-boss, each installed at its tag (`herdr plugin install`, or a prepared local copy linked
+# where /bin/bash is absent): plugin id, repository path, tag, and the state key that records whether the user had it before
+# install. They change less often than the pi package: bump a tag when that folder changes. herdr-plugin is the sidebar's
+# net view; herdr-reaper closes the panes agents leave in worktree workspaces, removes their clean checkouts, and keeps
+# pinned workspaces. Neither manifest binds keys; docs/reference.md shows how to bind their actions.
 HERDR_PLUGINS = (
     ("wayne930242.straw-boss", "wayne930242/pi-straw-boss/herdr-plugin", "v0.50.0", "straw_boss_plugin_preinstalled"),
     ("wayne930242.straw-boss-reaper", "wayne930242/pi-straw-boss/herdr-reaper", "v0.58.3", "reaper_plugin_preinstalled"),

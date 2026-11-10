@@ -208,12 +208,49 @@ def needs_portable_plugins() -> bool:
     return not Path("/bin/bash").is_file()
 
 
-def portable_plugin_root(home: Path, plugin_id: str, repo: str, ref: str) -> Path:
-    """Prepare a pinned local plugin before linking it; never edit Herdr's internal store."""
+# A NixOS system profile path survives garbage collection; a /nix/store bash on PATH does not.
+STABLE_BASH_PATHS = ("/run/current-system/sw/bin/bash", "/usr/bin/bash")
+PORTABLE_PLUGINS_DIR = Path(".local/share/weihung-agent-root/herdr-plugins")
+
+
+def portable_bash() -> str:
+    """The bash the prepared manifests run: a stable system path, or a PATH bash outside the Nix store."""
+    stable = next((path for path in STABLE_BASH_PATHS if Path(path).is_file()), None)
+    if stable:
+        return stable
     bash = shutil.which("bash")
     if not bash:
         raise ValueError("bash is not on PATH; the Herdr plugins require bash")
-    root = home / ".local/share/weihung-agent-root/herdr-plugins" / plugin_id / ref
+    if bash.startswith("/nix/store/"):
+        raise ValueError(f"bash resolves to {bash}, which Nix garbage collection removes; "
+                         "run the installer where /run/current-system/sw/bin/bash exists")
+    return bash
+
+
+def manifest_interpreters(root: Path) -> set[str]:
+    """The non-node interpreters a prepared manifest launches."""
+    import tomllib
+    manifest = tomllib.loads((root / "herdr-plugin.toml").read_text())
+    return {entry["command"][0] for section in ("startup", "events", "actions")
+            for entry in manifest.get(section, []) if entry["command"][0] != "node"}
+
+
+def remove_portable_plugin(home: Path, plugin_id: str) -> None:
+    shutil.rmtree(home / PORTABLE_PLUGINS_DIR / plugin_id, ignore_errors=True)
+
+
+def portable_plugin_root(home: Path, plugin_id: str, repo: str, ref: str) -> Path:
+    """Prepare a pinned local plugin before linking it; never edit Herdr's internal store."""
+    bash = portable_bash()
+    root = home / PORTABLE_PLUGINS_DIR / plugin_id / ref
+    # An earlier run may have recorded a bash that is gone or differs now; prepare the pin again.
+    if root.exists() and manifest_interpreters(root) != {bash}:
+        shutil.rmtree(root)
+    if root.parent.exists():
+        # Older pins and the staging folders of an interrupted run.
+        for sibling in root.parent.iterdir():
+            if sibling.name != ref:
+                shutil.rmtree(sibling)
     if not root.exists():
         root.parent.mkdir(parents=True, exist_ok=True)
         # A failed clone or patch leaves no final directory, so the next run retries.
@@ -242,7 +279,8 @@ def install_herdr_plugins(ctx: Context) -> None:
             ctx.state[preinstalled] = line is not None
             ctx.save()
         root = portable_plugin_root(ctx.home, plugin_id, repo, ref) if needs_portable_plugins() else None
-        expected = str(root) if root else f"github:{repo}@{ref}"
+        # `herdr plugin list` shows a linked plugin by its resolved path.
+        expected = str(root.resolve()) if root else f"github:{repo}@{ref}"
         if line and expected in line:
             continue
         if line:
@@ -361,8 +399,10 @@ def restore(ctx: Context) -> None:
         retire_herdr_web_ui(ctx)
         # A plugin the user had before install stays; one install added goes.
         for plugin_id, _, _, preinstalled in HERDR_PLUGINS:
-            if not state.get(preinstalled, True) and plugin_line(home, plugin_id):
-                external.run(["herdr", "plugin", "uninstall", plugin_id], home)
+            if not state.get(preinstalled, True):
+                if plugin_line(home, plugin_id):
+                    external.run(["herdr", "plugin", "uninstall", plugin_id], home)
+                remove_portable_plugin(home, plugin_id)
         if not state.get("playwriter_preinstalled", True):
             external.run(["npm", "uninstall", "-g", "playwriter"], home)
     settings = read_json(settings_path)

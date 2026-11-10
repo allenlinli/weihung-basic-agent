@@ -11,7 +11,9 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 
-from pi_root import external, packages
+import shutil
+
+from pi_root import configs, external, packages
 from pi_root.context import Context
 from pi_root.jsonfile import read_json, write_json
 from pi_root.paths import COMPUTER_USE_CONFIG
@@ -124,6 +126,118 @@ class FleetOptionsTests(unittest.TestCase):
                                             text=True, capture_output=True, check=True)
                     self.assertEqual(result.stdout, "portable-ok\n")
             self.assertEqual(config.read_text(), original)
+
+    def test_disabled_computer_use_retires_the_macos_helper(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory)
+            app = home / configs.COMPUTER_USE_APP
+            (app / "Contents/MacOS").mkdir(parents=True)
+            (app / "Contents/MacOS/bridge").write_text("")
+            cache = home / configs.COMPUTER_USE_CACHE
+            cache.mkdir(parents=True)
+            for name in ("bridge.sock", "bridge.sock.lock"):
+                (cache / name).write_text("")
+            alive = {4242}
+            commands = []
+            def run(args, **_kwargs):
+                commands.append(args)
+                stdout = "".join(f"{pid}\n" for pid in alive) if args[0] == "pgrep" else ""
+                return subprocess.CompletedProcess(args, 0 if stdout or args[0] != "pgrep" else 1, stdout, "")
+            def kill(pid, sig):
+                if pid not in alive:
+                    raise ProcessLookupError(pid)
+                if sig:
+                    alive.discard(pid)
+            ctx = Context(home, {"computer_use": "disabled"})
+            with mock.patch.object(configs.sys, "platform", "darwin"), \
+                    mock.patch.object(configs.subprocess, "run", run), mock.patch.object(configs.os, "kill", kill):
+                configs.apply_computer_use(ctx)
+                configs.apply_computer_use(ctx)
+            self.assertFalse(app.exists())
+            self.assertEqual(list(cache.iterdir()), [])
+            self.assertEqual(commands.count(["tccutil", "reset", "All", configs.COMPUTER_USE_BUNDLE]), 1)
+            import re
+            pattern = commands[0][2]
+            bridge = str(app / "Contents/MacOS/bridge")
+            self.assertTrue(re.search(pattern, f"{bridge} serve --socket {cache}/bridge.sock"))
+            self.assertFalse(re.search(pattern, f"/usr/bin/grep {bridge}"))
+
+    def test_computer_use_helper_is_left_alone_when_enabled_or_off_macos(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory)
+            app = home / configs.COMPUTER_USE_APP
+            app.mkdir(parents=True)
+            with mock.patch.object(configs.subprocess, "run") as run:
+                with mock.patch.object(configs.sys, "platform", "linux"):
+                    configs.apply_computer_use(Context(home, {"computer_use": "disabled"}))
+                with mock.patch.object(configs.sys, "platform", "darwin"):
+                    configs.apply_computer_use(Context(home, {"computer_use": "enabled"}))
+            run.assert_not_called()
+            self.assertTrue(app.exists())
+
+    def test_portable_bash_prefers_the_system_profile_over_store_paths(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            stable = Path(directory) / "sw/bin/bash"
+            stable.parent.mkdir(parents=True)
+            stable.write_text("")
+            with mock.patch.object(packages.shutil, "which", return_value="/nix/store/abc-bash-5/bin/bash"):
+                with mock.patch.object(packages, "STABLE_BASH_PATHS", (str(stable),)):
+                    self.assertEqual(packages.portable_bash(), str(stable))
+                with mock.patch.object(packages, "STABLE_BASH_PATHS", ()):
+                    with self.assertRaisesRegex(ValueError, "garbage"):
+                        packages.portable_bash()
+
+    def test_portable_root_rebuilds_a_stale_interpreter_and_prunes_old_refs(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory)
+            plugin_id, repo, ref, _ = HERDR_PLUGINS[0]
+            parent = home / ".local/share/weihung-agent-root/herdr-plugins" / plugin_id
+            stale = parent / ref
+            stale.mkdir(parents=True)
+            (stale / "herdr-plugin.toml").write_text('[[startup]]\ncommand = ["/nix/store/gone/bin/bash", "run.sh"]\n')
+            for leftover in ("v0.1.0", "tmpabc123"):
+                (parent / leftover).mkdir()
+            bash = shutil.which("bash")
+            def run(args: list[str], _home: Path) -> None:
+                if args[:2] == ["git", "clone"]:
+                    root = Path(args[-1]) / repo.split("/", 2)[2]
+                    root.mkdir(parents=True)
+                    (root / "herdr-plugin.toml").write_text('[[startup]]\ncommand = ["/bin/bash", "run.sh"]\n')
+            with mock.patch.object(external, "run", run), mock.patch.object(packages, "portable_bash", return_value=bash):
+                root = packages.portable_plugin_root(home, plugin_id, repo, ref)
+            self.assertEqual(root, stale)
+            self.assertIn(json.dumps(bash), (root / "herdr-plugin.toml").read_text())
+            self.assertEqual(sorted(path.name for path in parent.iterdir()), [ref])
+            packages.remove_portable_plugin(home, plugin_id)
+            self.assertFalse(parent.exists())
+
+    def test_linked_plugin_match_uses_the_resolved_root(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory) / "home"
+            real_share = Path(directory) / "real-share"
+            real_share.mkdir()
+            (home / ".local").mkdir(parents=True)
+            (home / ".local/share").symlink_to(real_share)
+            roots = {}
+            for plugin_id, repo, ref, _ in HERDR_PLUGINS:
+                root = home / ".local/share/weihung-agent-root/herdr-plugins" / plugin_id / ref
+                root.mkdir(parents=True)
+                roots[plugin_id] = root
+            listed = "\n".join(f"- {plugin_id} (X) enabled [local:{root.resolve()}]" for plugin_id, root in roots.items())
+            calls = []
+            with mock.patch.object(external, "run", lambda args, _home: calls.append(args)), \
+                    mock.patch.object(external, "capture", return_value=listed), \
+                    mock.patch.object(packages, "needs_portable_plugins", return_value=True), \
+                    mock.patch.object(packages, "portable_plugin_root", lambda _h, plugin_id, _r, _f: roots[plugin_id]):
+                packages.install_herdr_plugins(Context(home, {}))
+            self.assertEqual(calls, [])
+
+    def test_auto_update_leaves_the_hook_runtime_to_a_reviewed_bump(self) -> None:
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("pi_pins", Path(__file__).resolve().parents[1] / "scripts/pi-pins.py")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        self.assertIn("pi-code", module.MANUAL_PINS)
 
     @unittest.skipUnless(os.environ.get("PI_TEST_REAL_PLUGINS"), "set PI_TEST_REAL_PLUGINS=1 for pinned GitHub/Herdr fixture checks")
     def test_real_pinned_portable_plugins_validate_without_starting_reaper(self) -> None:
