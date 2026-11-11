@@ -34,7 +34,11 @@ Dispatch through `pi-herdr-agents` with the role that matches the work: `scout` 
 
 A change-set gets one fresh-context `reviewer` after its anchor passes when it touches a shared contract, authorization or permission data, a migration, or security, or when the user asks for one. Other change-sets rely on their anchor and the author's own read of the diff. In a review, only P0 and P1 findings block merge and need a re-check; record P2 and lower in the report or ticket.
 
-Carry bounded work on the session's own chain yourself; a coordinating session dispatches tasks independent of its chain in parallel. Every `subagent` gets its objective, cwd, ownership, Reality anchor, role, and `solutionSpace`.
+Carry bounded work on the session's own chain yourself; a coordinating session dispatches tasks independent of its chain in parallel.
+
+When the user gives a task unrelated to the current one (a different goal, files, or deliverable), keep it out of the current checkout and branch: dispatch a `worker` with `worktree: { branch: <task-slug>, base: <the repository's remote default branch> }`, with `cwd` set to the repository the task belongs to, and keep working on the current task. The base is never the current branch, whose commits belong to the current task. The brief tells the worker to test and commit, report the SHA, and not push, merge, or remove; tell the user the branch and path. Skip the worktree for a read-only question, a change the user asks for in place or "here", and a follow-up on the current task.
+
+Every `subagent` gets its objective, cwd, ownership, Reality anchor, role, and `solutionSpace`.
 
 ## Code discovery
 
