@@ -29,18 +29,27 @@ STEPS = (
     Step("overlay-models", configs.apply_overlay_models, configs.restore_overlay_models),
     Step("overlay-trust", configs.apply_overlay_trust, configs.restore_overlay_trust),
     Step("compaction", configs.apply_compaction, configs.restore_compaction),
-    # Last to apply and first to restore: pi packages, the tools they need, and the resources ported beside them.
+    # Pi packages, the tools they need, and the resources ported beside them.
     Step("packages", packages.apply, packages.restore),
+    # After packages removed pi-computer-use, so a live session cannot rebuild the helper while it is being retired.
+    Step("computer-use-helper", configs.retire_computer_use, configs.keep_retired),
 )
 
 
-def install(home: Path, skip_external: bool, force: bool, herdr_root: str | None = None, profile: str | None = None) -> None:
+def install(home: Path, skip_external: bool, force: bool, herdr_root: str | None = None, profile: str | None = None,
+            *, computer_use: str | None = None, pi_code_hooks: str | None = None) -> None:
     marker = home / MARKER
     state = read_json(marker)
     # A run without --profile keeps the recorded one, so the scheduled bare install never reverts an unattended box.
     profile = profile or state.get("profile", unattended.DEFAULT)
     ctx = Context(home, state, skip_external, force, herdr_root, first_install=not marker.exists(), profile=profile)
     ctx.state["profile"] = profile
+    # Independent host choices survive bare/auto installs and profile changes.
+    for key, value, default in (("computer_use", computer_use, "enabled"), ("pi_code_hooks", pi_code_hooks, "disabled")):
+        choice = value if value is not None else state.get(key, default)
+        if choice not in ("enabled", "disabled"):
+            raise ValueError(f"invalid {key} choice: {choice!r}")
+        state[key] = choice
     # The overlay is recorded with the first step's marker save, so a later run without --overlay keeps it.
     if overlay := overlay_root():
         ctx.state["overlay"] = str(overlay)

@@ -2,6 +2,12 @@
 
 import hashlib
 import os
+import re
+import shutil
+import signal
+import subprocess
+import sys
+import time
 from copy import deepcopy
 from pathlib import Path
 
@@ -35,6 +41,12 @@ OPEN_TUI_HIDDEN_SEGMENTS = ("runtime", "cost")
 # pi-computer-use stays in the background: no raw input, focus change, or cursor takeover, so it never fights the user
 # for the machine; `/computer-use` shows the active config, and a project .pi/computer-use.json can still override it.
 COMPUTER_USE_SETTINGS = {"headless": True}
+# The macOS helper app pi-computer-use's postinstall creates, which holds the Accessibility and Screen Recording grants and
+# runs a bridge daemon on a socket in its cache. Removing the package leaves all three, so `--computer-use disabled` removes them.
+COMPUTER_USE_APP = Path("Applications/pi-computer-use.app")
+COMPUTER_USE_CACHE = Path("Library/Caches/pi-computer-use")
+COMPUTER_USE_BUNDLE = "com.injaneity.pi-computer-use"
+HELPER_EXIT_SECONDS = 5
 
 
 def write_or_remove(path: Path, value: dict) -> None:
@@ -344,7 +356,58 @@ def restore_open_tui(ctx: Context) -> None:
         path.unlink()
 
 
+def helper_pids(bridge: Path) -> list[int]:
+    found = subprocess.run(["pgrep", "-f", f"^{re.escape(str(bridge))}( |$)"], capture_output=True, text=True, check=False)
+    return [int(pid) for pid in found.stdout.split()]
+
+
+def running(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    return True
+
+
+def retire_computer_use(ctx: Context) -> None:
+    """After the packages step removed pi-computer-use, so no session can rebuild the helper, retire it on macOS."""
+    if ctx.state.get("computer_use") == "disabled" and sys.platform == "darwin":
+        retire_computer_use_helper(ctx.home)
+
+
+def keep_retired(_ctx: Context) -> None:
+    """Uninstall never brings back a retired helper; re-enabling reinstalls the package, which rebuilds it."""
+
+
+def retire_computer_use_helper(home: Path) -> None:
+    """Stop the macOS bridge, reset the privacy grants made to the helper, then remove the app and its socket."""
+    app = home / COMPUTER_USE_APP
+    pids = helper_pids(app / "Contents/MacOS/bridge")
+    for pid in pids:
+        if running(pid):
+            os.kill(pid, signal.SIGTERM)
+    deadline = time.monotonic() + HELPER_EXIT_SECONDS
+    while any(running(pid) for pid in pids):
+        if time.monotonic() > deadline:
+            raise RuntimeError(f"pi-computer-use bridge {pids} did not exit; stop it and rerun the installer")
+        time.sleep(0.1)
+    cache = home / COMPUTER_USE_CACHE
+    for name in ("bridge.sock", "bridge.sock.lock"):
+        (cache / name).unlink(missing_ok=True)
+    if app.exists():
+        # tccutil finds the bundle id through the app on disk, so the reset comes first; a failed reset keeps the app
+        # so the next run tries again.
+        reset = subprocess.run(["tccutil", "reset", "All", COMPUTER_USE_BUNDLE], capture_output=True, text=True, check=False)
+        if reset.returncode:
+            raise RuntimeError(f"tccutil reset All {COMPUTER_USE_BUNDLE} failed ({reset.stderr.strip()}); the helper app stays "
+                               "until a rerun resets its grants, or remove pi-computer-use from Privacy & Security yourself")
+        shutil.rmtree(app)
+
+
 def apply_computer_use(ctx: Context) -> None:
+    if ctx.state.get("computer_use") == "disabled":
+        restore_computer_use(ctx)
+        return
     if unattended.is_unattended(ctx.profile):
         return
     state = ctx.state

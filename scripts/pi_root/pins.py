@@ -42,9 +42,11 @@ RETIRED_SOURCES = ("npm:pi-herdr-doc-review", "npm:@victor-software-house/pi-cur
                    "git:github.com/wayne930242/pi-lens",
                    # pi-lens ran diagnostics and language servers after every edit and cost too much CPU and memory.
                    "npm:pi-lens")
-# pi-code loads only claude-rules.ts, which reads each project's .claude/rules as Claude Code does;
-# its other extensions duplicate the todo, MCP, subagent, and web packages below.
+# Rules load by default. --pi-code-hooks enabled adds only the native hooks entrypoint;
+# other extensions duplicate the todo, MCP, subagent, and web packages below.
 CLAUDE_RULES_PACKAGE = {"source": CLAUDE_RULES_SOURCE, "extensions": ["extensions/claude-rules.ts"]}
+CLAUDE_HOOKS_EXTENSION = "extensions/hooks/index.ts"
+COMPUTER_USE_ID = "npm:@injaneity/pi-computer-use"
 PACKAGES = [
     BRIDGE_SOURCE,
     HERDR_AGENTS_SOURCE,
@@ -78,10 +80,11 @@ PACKAGES = [
     "npm:@injaneity/pi-computer-use@0.5.1",
     CLAUDE_RULES_PACKAGE,
 ]
-# The Herdr plugins in pi-straw-boss, each installed with `herdr plugin install` at its tag: plugin id, repository path, tag,
-# and the state key that records whether the user had it before install. They change less often than the pi package:
-# bump a tag when that folder changes. herdr-plugin is the sidebar's net view (prefix+alt+n); herdr-reaper closes the
-# panes agents leave in worktree workspaces, removes their clean checkouts, and keeps pinned workspaces (prefix+P).
+# The Herdr plugins in pi-straw-boss, each installed at its tag (`herdr plugin install`, or a prepared local copy linked
+# where /bin/bash is absent): plugin id, repository path, tag, and the state key that records whether the user had it before
+# install. They change less often than the pi package: bump a tag when that folder changes. herdr-plugin is the sidebar's
+# net view; herdr-reaper closes the panes agents leave in worktree workspaces, removes their clean checkouts, and keeps
+# pinned workspaces. Neither manifest binds keys; docs/reference.md shows how to bind their actions.
 HERDR_PLUGINS = (
     ("wayne930242.straw-boss", "wayne930242/pi-straw-boss/herdr-plugin", "v0.50.0", "straw_boss_plugin_preinstalled"),
     ("wayne930242.straw-boss-reaper", "wayne930242/pi-straw-boss/herdr-reaper", "v0.58.3", "reaper_plugin_preinstalled"),

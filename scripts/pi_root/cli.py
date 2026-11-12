@@ -16,6 +16,8 @@ def main() -> None:
     parser.add_argument("--force", action="store_true")
     parser.add_argument("--no-overlay", action="store_true", help="install without the overlay the last install recorded")
     parser.add_argument("--profile", choices=unattended.PROFILES, help="install profile; a run without it keeps the recorded one")
+    parser.add_argument("--computer-use", choices=("enabled", "disabled"), help="saved computer-use package choice")
+    parser.add_argument("--pi-code-hooks", choices=("enabled", "disabled"), help="saved opt-in for native Claude hooks (rules stay enabled)")
     args = parser.parse_args()
     home = args.home.expanduser().resolve()
     if args.action == "saved-overlay":
@@ -39,6 +41,7 @@ def main() -> None:
     # install.sh runs `migrate` first, so a wrong override stops there, before any link changes a file.
     herdr_root = packages.herdr_agents_root() if args.action in ("migrate", "install") else None
     if args.action == "install":
-        steps.install(home, args.skip_external, args.force, herdr_root, args.profile)
+        steps.install(home, args.skip_external, args.force, herdr_root, args.profile,
+                      computer_use=args.computer_use, pi_code_hooks=args.pi_code_hooks)
     elif args.action == "uninstall":
         steps.uninstall(home, args.skip_external)
